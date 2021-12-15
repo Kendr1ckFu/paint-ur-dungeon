@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Paint Your Dungeon</title>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+<style type="text/css">
+audio	{ display:none; }
+</style>
+</head>
+
+<body style="overflow:hidden; margin:0px; padding:0px;">
+<canvas id="theCanvas" style="position:absolute; width:100%; height:100%; background-color:#000000;">
+Your browser does not support the &lt;canvas&gt; tag.
+Please update your browser.
+</canvas>
+<audio preload="auto" id="select"><source src="select.mp3"></audio>
+<audio preload="auto" id="rotate"><source src="rotate.mp3"></audio>
+<audio preload="auto" id="collect"><source src="collect.mp3"></audio>
+<audio preload="auto" id="place"><source src="place.mp3"></audio>
+<audio preload="auto" id="hit"><source src="hit.mp3"></audio>
+<audio preload="auto" id="quaff"><source src="quaff.mp3"></audio>
+<audio preload="auto" id="lose"><source src="lose.mp3"></audio>
+<audio preload="auto" id="win"><source src="win.mp3"></audio>
+<script type="text/javascript">
+
+/******************** CONSTANTS - configure your game here ********************/
+
+const SCREEN_CX = 640; // px
+const SCREEN_CY = 480; // px
+const DELAY = 25; // ms
+
+/****************** IMAGES - list images here for preloading ******************/
+
+const mimgTiles = new Image(); // https://pixel-poem.itch.io/dungeon-assetpuck
+const mimgMvbls = new Image(); // https://thkaspar.itch.io/micro-character-bases
+const mimgDragon= new Image(); // https://akylrum.itch.io/kdp
+const IMAGES = [ mimgTiles, 'tiles.gif', mimgMvbls, 'movable.gif', mimgDragon, 'dragon.gif' ];
+// music.mp3, lose.mp3, win.mp3 from https://svl.itch.io/rpg-music-pack-svl
+// other sounds from https://jdwasabi.itch.io/8-bit-16-bit-sound-effects-pack
+
+/*********************** INTERNAL - do not change this ************************/
+
+var fbCanvas = document.getElementById('theCanvas');
+var bbCanvas = document.createElement('canvas');
+var fb, bb;
+var bb;
+reinitFB();
+bbCanvas.width = SCREEN_CX;
+bbCanvas.height = SCREEN_CY;
+var bb = bbCanvas.getContext('2d');
+var frame = 0;
+
+function loadFirstImage() {
+	if (IMAGES.length > 0) {
+		var i = 0;
+		var img = IMAGES.shift();
+		img.onload = loadFirstImage;
+		img.src = IMAGES.shift();
+	} else	setTimeout(startInternal, 1);
+}
+
+loadFirstImage();
+
+function preloadImage(sPath) {
+	var img = new Image();
+	images.push(img);
+	images.push(sPath);
+	return img;
+}
+
+function reinitFB() {
+	fb = fbCanvas.getContext('2d');
+	fbCanvas.width = fbCanvas.clientWidth;
+	fbCanvas.height = fbCanvas.clientHeight;
+	fb.imageSmoothingEnabled = false;
+}
+
+function blt() {
+	if (fbCanvas.width * SCREEN_CY > fbCanvas.height * SCREEN_CX) {
+		var cX = fbCanvas.height * SCREEN_CX / SCREEN_CY;
+		fb.drawImage(bbCanvas, (fbCanvas.width - cX) / 2, 0, cX, fbCanvas.height);
+	} else {
+		var cY = fbCanvas.width * SCREEN_CY / SCREEN_CX;
+		fb.drawImage(bbCanvas, 0, (fbCanvas.height - cY) / 2, fbCanvas.width, cY);
+	}
+}
+
+const steppingStuff = [];
+const foregroundStuff = [];
+
+Array.prototype.remove = function(o) {
+	var i = this.indexOf(o);
+	if (i >= 0) this.splice(i, 1);
+}
+
+function startInternal() {
+	start();
+	setInterval(stepInternal, DELAY);
+}
+
+function stepInternal() {
+	frame++;
+	for (var i = 0; i < steppingStuff.length; ++i)
+		steppingStuff[i].step();
+	step();
+	paint();
+	for (var i = 0; i < foregroundStuff.length; ++i)
+		foregroundStuff[i].paint();
+	blt();
+}
+
+document.body.onresize = function() { reinitFB(); blt(); };
+
+/********************* MODULES - paste your modules here **********************/
+
+/** FULLSCREEN **/
+function openFullscreen() {
+	var doc = document.documentElement;
+	if (doc.requestFullscreen)
+		doc.requestFullscreen();
+	else if (doc.webkitRequestFullscreen)
+		doc.webkitRequestFullscreen();
+	else if (doc.msRequestFullscreen)
+		doc.msRequestFullscreen();
+}
+function closeFullscreen() {
+	if (document.exitFullscreen)
+		document.exitFullscreen();
+	else if (document.webkitExitFullscreen)
+		document.webkitExitFullscreen();
+	else if (document.msExitFullscreen)
+		document.msExitFullscreen();
+}
+
+/** WRAPPED TEXT **/
+function fillWrappedText(sText, x, y, cyLine, cxMax) {
+	var regSpace = / /g;
+	var asLines = [], iLine = 0, sWord, sLine = "";
+	var iPrev = 0;
+	sText += " ";
+	if (cxMax === undefined) cxMax = SCREEN_CX;
+	regSpace.test(sText);
+	iPrev = regSpace.lastIndex;
+	asLines[0] = sLine = sText.substring(0, iPrev - 1);
+	while (regSpace.test(sText)) {
+		sLine += " " + (sWord = sText.substring(iPrev, regSpace.lastIndex - 1));
+		if (bb.measureText(sLine).width < cxMax)
+			asLines[iLine] = sLine
+		else	asLines[++iLine] = sLine = sWord;
+		iPrev = regSpace.lastIndex;
+	}
+	if (bb.textBaseline == 'bottom') {
+		while (iLine >= 0) {
+			bb.fillText(asLines[iLine--], x, y);
+			y -= cyLine;
+		}
+	} else {
+		for (iLine = 0; iLine < asLines.length; ++iLine) {
+			bb.fillText(asLines[iLine], x, y);
+			y += cyLine;
+		}
+	}
+}
+
+/** FADE **/
+var internalFade = {
+	from:	0.0,
+	to:	0.0,
+	cSteps:	0,
+	step:	function() {
+		if (this.cSteps <= 0) {
+			this.from = this.to;
+			steppingStuff.splice(steppingStuff.indexOf(this), 1);
+			if (this.to == 0.0)
+				foregroundStuff.splice(foregroundStuff.indexOf(this), 1);
+		} else
+			this.from += (this.to - this.from) / this.cSteps--;
+	},
+	paint:	function() {
+		var oldAlpha = bb.globalAlpha;
+		var oldFill = bb.fillStyle;
+		bb.globalAlpha = this.from;
+		bb.fillStyle = '#000000';
+		bb.fillRect(0, 0, SCREEN_CX, SCREEN_CY);
+		bb.globalAlpha = oldAlpha;
+		bb.fillStyle = oldFill;
+	}
+};
+function fadeIn(cSteps) {
+	if (internalFade.from == 0.0) internalFade.from = 1.0;
+	internalFade.to = 0.0;
+	internalFade.cSteps = cSteps;
+	if (steppingStuff.indexOf(internalFade) < 0)
+		steppingStuff.push(internalFade);
+	if (foregroundStuff.indexOf(internalFade) < 0)
+		foregroundStuff.push(internalFade);
+}
+function fadeOut(cSteps) {
+	internalFade.to = 1.0;
+	internalFade.cSteps = cSteps;
+	if (steppingStuff.indexOf(internalFade) < 0)
+		steppingStuff.push(internalFade);
+	if (foregroundStuff.indexOf(internalFade) < 0)
+		foregroundStuff.push(internalFade);
+}
+
+/** MOUSE **/
+var mouseX = -1, mouseY = -1;
+function getMouseCoords(e) {
+	if (fbCanvas.width * SCREEN_CY > fbCanvas.height * SCREEN_CX) {
+		var cX = fbCanvas.height * SCREEN_CX / SCREEN_CY;
+		mouseX = Math.floor((e.offsetX - (fbCanvas.width - cX) / 2) * SCREEN_CX / cX);
+		mouseY = Math.floor(e.offsetY * SCREEN_CY / fbCanvas.height);
+	} else {
+		var cY = fbCanvas.width * SCREEN_CY / SCREEN_CX;
+		mouseX = Math.floor(e.offsetX * SCREEN_CX / fbCanvas.width);
+		mouseY = Math.floor((e.offsetY - (fbCanvas.height - cY) / 2) * SCREEN_CY / cY);
+	}
+}
+fbCanvas.addEventListener('mousemove', getMouseCoords, false);
+fbCanvas.addEventListener('mouseover', getMouseCoords, false);
+fbCanvas.addEventListener('mouseout', function() { mouseX = mouseY = undefined; }, false);
+
+/** MAP **/
+const BLOCKED = -1;
+const FREE = 0;
+function createMap(img, cxTile, cyTile, cX, cY, cStaticLayers, cMovableLayers, cWalkmasks, statDefault, walkDefault) {
+	var map = [];
+	map.img = img;
+	map.cxTile = cxTile;
+	map.cyTile = cyTile;
+	map.cTilesInAnImgRow = Math.floor(img.width / cxTile);
+	map.cX = cX;
+	map.cY = cY;
+	map.static = new Array(cStaticLayers);
+	for (var i = cStaticLayers; i--; ) {
+		var a = map.static[i] = new Array(cX);
+		for (var x = cX; x--; ) {
+			a[x] = new Array(cY);
+			if (statDefault !== undefined) {
+				for (var y = cY; y--; )
+					a[x][y] = statDefault;
+			}
+		}
+	}
+	map.movable = new Array(cMovableLayers);
+	for (var i = cMovableLayers; i--; ) {
+		map.movable[i] = [];
+	}
+	map.walkmask = new Array(cWalkmasks);
+	for (var i = cWalkmasks; i--; ) {
+		var a = map.walkmask[i] = new Array(cX);
+		for (var x = cX; x--; ) {
+			a[x] = new Array(cY);
+			if (walkDefault !== undefined) {
+				for (var y = cY; y--; )
+					a[x][y] = walkDefault;
+			}
+		}
+	}
+	map.drawStatic = function(i, xOffs, yOffs) {
+		if (yOffs === undefined) { xOffs = yOffs = 0; }
+		const xMin = xOffs >= 0 ? 0 : Math.floor(-xOffs / this.cxTile);
+		const yMin = yOffs >= 0 ? 0 : Math.floor(-yOffs / this.cyTile);
+		const xMax = Math.min(Math.ceil((SCREEN_CX - xOffs) / this.cxTile) + 1, this.cX);
+		const yMax = Math.min(Math.ceil((SCREEN_CY - yOffs) / this.cyTile) + 1, this.cY);
+		const cImgTilesX = this.cTilesInAnImgRow;
+		const cxTile = this.cxTile, cyTile = this.cyTile;
+		const a = this.static[i];
+		for (var x = 0; x < xMax; ++x) {
+			var row = a[x];
+			for (var y = 0; y < yMax; ++y)
+				bb.drawImage(this.img,
+					(row[y] % cImgTilesX) * cxTile, Math.floor(row[y] / cImgTilesX) * cyTile,
+					cxTile, cyTile, x * cxTile + xOffs, y * cyTile + yOffs, cxTile, cyTile);
+		}
+	};
+	map.drawMovable = function(i, xOffs, yOffs) {
+		const a = this.movable[i];
+		const cxTile = this.cxTile, cyTile = this.cyTile;
+		for (var j = 0; j < a.length; ++j) {
+			var m = a[j], cxFrame = m.cxFrame, cyFrame = m.cyFrame, cFPR = m.cFramesPerRow;
+			var iFrame = m.animations[m.animation][m.frame];
+			bb.drawImage(m.img, (iFrame % cFPR) * cxFrame, Math.floor(iFrame / cFPR) * cyFrame, cxFrame, cyFrame,
+				(m.x + 0.5) * cxTile - m.xOrigin + m.xOffset + xOffs,
+				(m.y + 1) * cyTile - m.yOrigin + m.yOffset + yOffs, cxFrame, cyFrame);
+		}
+	};
+	map.findMovableAt = function(i, x, y) {
+		var aMvbl = this.movable[i];
+		for (var j = aMvbl.length; --j >= 0; ) {
+			var mvbl = aMvbl[j];
+			if (mvbl.x == x && mvbl.y == y) return mvbl;
+		}
+		return null;
+	};
+	return map;
+}
+
+/** A* PATHFINDING **/
+function enablePathing(map) {
+	if (map.findPath) return;
+	map.pathingData = new Array(map.cX);
+	for (var x = map.cX; --x >= 0; ) {
+		var col = map.pathingData[x] = new Array(map.cY);
+		for (var y = map.cY; --y >= 0; ) {
+			col[y] = { x: x, y: y, cameFrom: null, cameInDir: null, gScore: Number.MAX_VALUE, fScore: Number.MAX_VALUE };
+//			 toString: function() { return "(" + this.x + ", " + this.y + ") - gScore: " + this.gScore; }
+		}
+	}
+	map.findPath = function(xFrom, yFrom, xTo, yTo, h, iWalkmask, afWalkmask) {
+		for (var x = this.cX; --x >= 0; ) {
+			var col = this.pathingData[x];
+			for (var y = map.cY; --y >= 0; ) {
+				var xy = col[y];
+				xy.cameFrom = xy.cameInDir = null;
+				xy.gScore = xy.fScore = Number.MAX_VALUE;
+			}
+		}
+		var aafWalkmask = this.walkmask[iWalkmask];
+		if (afWalkmask === undefined) afWalkmask = -1;
+		var start = this.pathingData[xFrom][yFrom];
+		var openSet = [start];
+		start.gScore = 0
+		start.fScore = h(xFrom, yFrom, xTo, yTo);
+		while (openSet.length) {
+			var current = openSet.pop();
+			if (current.x == xTo && current.y == yTo) {
+				var path = [];
+				while (current !== null) {
+					path.unshift(current);
+					current = current.cameFrom;
+				}
+				return path;
+			}
+			var tgScore = current.gScore + 1; // change this if the distance is not 1!
+			for (var i = 3; i >= 0; --i) {
+				var x = current.x + (i == 1 ? 1 : i == 3 ? -1 : 0);
+				var col = this.pathingData[x];
+				if (col === undefined) continue;
+				var y = current.y + (i == 0 ? -1 : i == 2 ? 1 : 0);
+				var neighbor = col[y];
+				if (neighbor === undefined) continue;
+				if (aafWalkmask && (aafWalkmask[x][y] & afWalkmask)) continue;
+				if (tgScore < neighbor.gScore) {
+					var fIsOpen = neighbor.cameFrom !== null;
+					neighbor.cameFrom = current;
+					neighbor.cameInDir = i;
+					neighbor.gScore = tgScore;
+					neighbor.fScore = tgScore + h(x, y, xTo, yTo);
+					if (fIsOpen) openSet.splice(openSet.indexOf(neighbor), 1);
+					// Insert in descending order
+					var j = openSet.length;
+					while (--j >= 0) {
+						if (openSet[j].fScore > neighbor.fScore) break;
+					}
+					openSet.splice(j+1, 0, neighbor);
+				}
+			}
+		}
+	}
+}
+function euclideanDistance(x1, y1, x2, y2) {
+	const cX = x2 - x1, cY = y2 - y1;
+	return Math.sqrt(cX * cX + cY * cY);
+}
+
+/*************** START and STEP FUNCTIONS - code your game here ***************/
+
+const UNPAINTED = 78;
+const MAX_ROOM_SIZE = 7;
+const CX_FRAG_MENU = 16 * MAX_ROOM_SIZE;
+const CY_FRAG = Math.floor(SCREEN_CY / 4);
+const CX_ITEM_CTR = Math.floor((SCREEN_CX - CX_FRAG_MENU) / 5.5);
+const X_HP_CTR = CX_FRAG_MENU + CX_ITEM_CTR*0.5
+const AX_ITEM_CTR = [ CX_FRAG_MENU + CX_ITEM_CTR*1.35, CX_FRAG_MENU + CX_ITEM_CTR*2.5,
+		CX_FRAG_MENU + CX_ITEM_CTR*3.5, CX_FRAG_MENU + CX_ITEM_CTR*4.5 ];
+var mMap, mxScroll = 0, myScroll = 0;
+var mFrag, maFrags = [], miSelFrag = 0, mxFrag, myFrag;
+
+var mMe, mDragon = null, macItems = [ 0, 0, 0, 0 ], miFrameGameOver = -1;
+var miDlvl = 1;
+
+var mfMouseInUse = false, mfDragging = false;
+var mxMouseDown, myMouseDown, mfDownOnFragment = false, mfFragmentChanged = false;
+var mcxScroll = 0, mfDownOnScroll = false;
+
+var mMusic = null;
+
+function restartOrPlay(sId) {
+	var elem = document.getElementById(sId);
+	elem.currentTime = 0;
+	elem.play();
+}
+
+const TUT_SELECT = { text: "Select a map fragment from\xa0the\xa0bar on\xa0the\xa0left!", done: false };
+const TUT_ROTATE = { text: "Tap it again or turn your\xa0mouse\xa0wheel to\xa0rotate\xa0it!", done: false };
+const TUT_PLACE  = { text: "Drag the fragment to place it adjacent to\xa0an\xa0open-ended corridor!", done: false };
+const TUT_SCROLL = { text: "Drag the map or move your mouse to\xa0one\xa0side to\xa0scroll the\xa0map!", done: false };
+const A_TUT_ITEM = [
+	{ text: "Place the fragment with the chest to\xa0get some better\xa0equipment!", done: false, applicable: false },
+	{ text: "Place the fragment with the blue\xa0potion! It's\xa0a\xa0healing\xa0potion!", done: false, applicable: false },
+	{ text: "You might want to place the fragment with the red potion. The\xa0potion\xa0of\xa0might"
+		+ " might help you in\xa0a\xa0fight!", done: false, applicable: false },
+	{ text: "Place the fragment with the scroll to get a teleportation\xa0scroll!", done: false, applicable: false },
+	{ text: "Place the fragment with the ladder to advance to\xa0the\xa0next\xa0level!", done: false, applicable: false }
+];
+const TUT_MONSTER= { text: "If you feel ready, place the\xa0fragment with\xa0the\xa0monster to\xa0fight\xa0it!",
+	done: false, applicable: false };
+const TUT_DRAGON = { text: "The Wyvern! You found it! Place it to fight it!", done: false, applicable: false };
+const TUT_XPORT  = { text: "Click the scroll icon to teleport to\xa0an\xa0unknown\xa0area!"
+	+ " Note:\xa0There's no\xa0way\xa0back...", done: false, applicable: false };
+const TUT_PATHERR= { text: "Sometimes you do not walk to\xa0the\xa0newly-placed\xa0room."
+	+ " That's\xa0a\xa0bug. Try\xa0again!", done: false, applicable: false };
+const A_TUT = [ TUT_DRAGON, TUT_PATHERR, TUT_SELECT, TUT_ROTATE, TUT_PLACE, TUT_SCROLL,
+	A_TUT_ITEM[0], A_TUT_ITEM[1], A_TUT_ITEM[2], A_TUT_ITEM[3],
+	TUT_MONSTER, A_TUT_ITEM[4], TUT_XPORT ];
+
+function pydCreateMap(cX, cY, statDefault, walkDefault) {
+	return createMap(mimgTiles, 16, 16, cX, cY, 2, 1, 1, statDefault, walkDefault);
+}
+
+function newLevel() {
+	// If the player character died, don't create a new level (should not happen...)
+	if (mMe.cHP <= 0) {
+		miFrameGameOver = frame;
+		fadeIn(10);
+		return;
+	}
+	// If we remove the map, stop the old monsters!
+	if (mMap) {
+		var mvbl = mMap.movable[0];
+		for (var i = mvbl.length; --i >= 0; ) {
+			if (mvbl[i] !== mMe)
+				steppingStuff.remove(mvbl[i]);
+		}
+	}
+	mMap = pydCreateMap(40, 30, UNPAINTED, BLOCKED);
+	mxScroll = myScroll = 0;
+	mDragon = null;
+	mFrag = createRandomFragment(true, true); // This is already placed, so no tutorial message!
+	var xPaste = Math.floor((40 - mFrag.cX) / 2);
+	var yPaste = Math.floor((30 - mFrag.cY) / 2);
+	pasteFragment(mFrag, xPaste, yPaste);
+	mMap.movable[0].push(mMe);
+	mMe.x = 19; mMe.y = 14;
+	mMe.xOffset = mMe.yOffset = 0;
+	mMe.dest = null;
+	mMe.travelPath = undefined;
+	// If we remove fragments, remove the tutorial hint for them as well!
+	for (var i = maFrags.length; --i >= 0; ) {
+		var frag = maFrags[i];
+		if (frag.iItem >= 0)
+			A_TUT_ITEM[frag.iItem].applicable = false;
+	}
+	maFrags = [];
+	maFrags.push(mFrag = createRandomFragment(true, true));
+	maFrags.push(createRandomFragment(true, true));
+	maFrags.push(createRandomFragment(true, true));
+	maFrags.push(createRandomFragment(true));
+	miSelFrag = 0;
+	fadeIn(10);
+}
+
+function fadeOutAndNewLevel() {
+	fadeOut(10);
+	setTimeout(newLevel, 10 * DELAY);
+}
+
+function gameOver() {
+	miFrameGameOver = frame;
+	steppingStuff.splice(0, steppingStuff.length);
+	fadeIn(10);
+}
+
+function fadeOutAndGameOver() {
+	fadeOut(10);
+	setTimeout(gameOver, 10 * DELAY);
+}
+
+function teleport() {
+	TUT_XPORT.done = true;
+	macItems[3]--;
+	fadeOutAndNewLevel();
+}
+
+function enemyHPNear(x, y) {
+	var cHP = 0;
+	var aMvbl = mMap.movable[0];
+	for (var j = aMvbl.length; --j >= 0; ) {
+		var mvbl = aMvbl[j];
+		if (mvbl === mMe) continue;
+		if (mvbl.x >= x - 3 && mvbl.x <= x + 3 && mvbl.y >= y - 3 && mvbl.y <= y + 3) cHP += mvbl.cHP;
+	}
+	return cHP;
+}
+
+function findNearEnemy(x, y) {
+	var aMvbl = mMap.movable[0];
+	for (var j = aMvbl.length; --j >= 0; ) {
+		var mvbl = aMvbl[j];
+		if (mvbl === mMe) continue;
+		if (mvbl.x >= x - 3 && mvbl.x <= x + 3 && mvbl.y >= y - 3 && mvbl.y <= y + 3) return mvbl;
+	}
+}
+
+var mMe = {
+	img: mimgMvbls, cxFrame: 16, cyFrame: 16, cFramesPerRow: 9, xOrigin: 7, yOrigin: 15,
+	animations: [[ 0, 1, 0, 2 ], [ 9, 10, 9, 11 ], [ 0, 3, 4, 5 ], [ 9, 12, 13, 14 ]],
+	animation: 0, frame: 0,
+	x: 19, y: 14, xOffset: 0, yOffset: 0,
+	cHP: 3, cMaxHP: 3, iMightStartFrame: -256,
+	iDirAtk: -1, victim: null,
+	travelPath: undefined, dest: null,
+	step: playerStep,
+	hit: function(cAtk) {
+		restartOrPlay('hit');
+		cAtk -= macItems[0];
+		if (cAtk <= 0) cAtk = (Math.random() * (1-cAtk) > 0);
+			  else cAtk = Math.ceil(Math.random() * cAtk);
+		mMe.cHP -= cAtk;
+		if (mMe.cHP < 0) {
+			mMe.cHP = 0;
+			mMap.movable[0].remove(mMe);
+			steppingStuff.remove(mMe);
+			fadeOutAndGameOver();
+			mMusic.pause();
+			restartOrPlay('lose');
+		}
+	}
+}
+
+function playerOrMonsterStep(entity, cxySpeed, cAtk) {
+	if (entity.animation == 2 || entity.animation == 3) { // attacking
+		if ((frame & 1) == 0) entity.frame++;
+		if (entity.frame >= 4) {
+			entity.victim.hit(cAtk);
+			entity.frame = entity.xOffset = entity.yOffset = 0;
+			entity.animation -= 2;
+		} else switch (entity.iDirAtk) {
+			case 0: entity.yOffset = -3 * entity.frame; break;
+			case 1: entity.xOffset = 2 * entity.frame; break;
+			case 2: entity.yOffset = 3 * entity.frame; break;
+			case 3: entity.xOffset = -2 * entity.frame; break;
+		}
+		return true;
+	} else if (entity.xOffset < 0) entity.xOffset += cxySpeed;
+	else if (entity.xOffset > 0) entity.xOffset -= cxySpeed;
+	else if (entity.yOffset < 0) entity.yOffset += cxySpeed;
+	else if (entity.yOffset > 0) entity.yOffset -= cxySpeed;
+	else return false;
+	entity.frame = (frame>>2) & 3;
+	return true;
+}
+
+function quaff(i) {
+	if (macItems[i] <= 0) return;
+	macItems[i]--;
+	restartOrPlay('quaff');
+	if (i == 1)
+		mMe.cHP = mMe.cMaxHP;
+	else if (i == 2)
+		mMe.iMightStartFrame = frame;
+}
+
+function playerStep() {
+	//document.title = this.x + ", " + this.y + ", " + this.xOffset + ", " + this.yOffset;
+	var iPick, mon, iDir;
+	var cNearHP = enemyHPNear(mMe.x, mMe.y);
+	var cAtk = macItems[0] + 1;
+	var mon;
+	if (frame - mMe.iMightStartFrame < 128) cAtk += Math.floor(macItems[0]/3);
+	if (playerOrMonsterStep(mMe, 2, cAtk)) return;
+	if ((mDragon && mMe.victim == mDragon) || cNearHP >= mMe.cHP) {
+		if (mMe.cHP < mMe.cMaxHP) quaff(1);
+		else if (frame - mMe.iMightStartFrame > 144) quaff(2);
+	}
+	if ((iPick = /* assign! */ mMap.static[1][this.x][this.y] - 65) >= 0 && iPick < 5) {
+		mMap.static[1][this.x][this.y] = undefined;
+		if (iPick == 4) { miDlvl++; fadeOutAndNewLevel(); }
+			   else { createFlyingItem(iPick); restartOrPlay('collect'); }
+	} else if ((mDragon && (this.y == mDragon.y || this.y == mDragon.y-1)
+			&& ((this.x == mDragon.x - 2 && (iDir = 2))
+			 || (this.x == mDragon.x + 2 && (iDir = 4))) && (mon = mDragon))
+		|| ((mon =/*assi*/ mMap.findMovableAt(0, this.x, this.y-1)) && (iDir = 1))
+			|| ((mon = mMap.findMovableAt(0, this.x+1, this.y)) && (iDir = 2))
+			|| ((mon = mMap.findMovableAt(0, this.x, this.y+1)) && (iDir = 3))
+			|| ((mon = mMap.findMovableAt(0, this.x-1, this.y)) && (iDir = 4))) {
+		this.victim = mon;
+		this.iDirAtk = --iDir;
+		if (!(iDir & 1)) this.animation += 2;
+		else if (iDir == 1) this.animation = 3;
+		else this.animation = 2;
+		this.frame = 0;
+		return;
+	} else if ((mon = /* assign! */ findNearEnemy(mMe.x, mMe.y)) && (!mMe.dest || mMe.dest.monster !== mon)) {
+		mMe.dest = { x: mon.x, y: mon.y, next: mMe.dest, monster: mon };
+		this.travelPath = undefined;
+	} else if (this.travelPath !== undefined) {
+		if (this.travelPath.length == 0) {
+			this.travelPath = undefined;
+			if (this.dest.monster) {
+				this.dest.x = this.dest.monster.x;
+				this.dest.y = this.dest.monster.y;
+			}
+			// Keep the destination if it is a new one or the monster has moved!
+			if (this.dest && this.x == this.dest.x && this.y == this.dest.y)
+				this.dest = this.dest.next;
+			this.frame = 0;
+			return;
+		}
+		// Repath if the current destionation is boring and there is a better one
+		if (this.dest.next !== undefined && this.dest.monster === undefined
+				&& mMap.static[1][this.dest.x][this.dest.y] === undefined) {
+			this.travelPath = undefined;
+			this.dest = this.dest.next;
+			this.frame = 0;
+			return;
+		}
+		var xy = this.travelPath.shift();
+		var xNew = this.x, yNew = this.y;
+		switch (xy.cameInDir) {
+			case 0: yNew--; this.yOffset = 14; break;
+			case 1:	xNew++; this.xOffset = -14; this.animation = 1; break;
+			case 2:	yNew++; this.yOffset = -14; break;
+			case 3:	xNew--; this.xOffset = 14; this.animation = 0; break;
+		}
+		if (mMap.findMovableAt(0, xNew, yNew)) {
+			this.xOffset = this.yOffset = 0;
+			this.travelPath = undefined;
+			this.frame = 0;
+			return;
+		}
+		this.x = xNew;
+		this.y = yNew;
+	} else if (this.dest) {
+		enablePathing(mMap);
+		// Skip dead monsters
+		while (this.dest.monster && 0 > mMap.movable[0].indexOf(this.dest.monster))
+			this.dest = this.dest.next;
+		if (this.dest.monster) {
+			// Follow the monster where it went
+			this.dest.x = this.dest.monster.x;
+			this.dest.y = this.dest.monster.y;
+		} else if (this.dest.next !== undefined && mMap.static[1][this.dest.x][this.dest.y] === undefined) {
+			// Drop destinations in the middle where there is nothing
+			this.dest = this.dest.next;
+			this.frame = 0;
+			return;
+		}
+		this.travelPath = mMap.findPath(this.x, this.y, this.dest.x, this.dest.y, euclideanDistance, 0);
+		if (this.travelPath !== undefined) {
+			if (TUT_PATHERR.applicable)
+				TUT_PATHERR.done = true;
+			this.travelPath.shift(); // first has no cameInDir
+		} else {
+			this.dest = this.dest.next;
+			TUT_PATHERR.applicable = true;
+		}
+	} else {
+		this.frame = 0;
+		return;
+	}
+	this.frame = (frame>>2) & 3;
+}
+
+const AAAI_ANIM = [[[ 18, 19, 18, 20 ], [ 27, 28, 27, 29 ], [ 18, 19, 18, 20 ], [ 27, 28, 27, 29 ]]];
+
+for (var i = 1, c = 36; i < 4; ++i, c += 18) {
+	var aaiAnim = [];
+	for (var j = mMe.animations.length; --j >= 0; ) {
+		var a = mMe.animations[j];
+		aaiAnim.unshift([ a[0] + c, a[1] + c, a[2] + c, a[3] + c ]);
+	}
+	AAAI_ANIM.push(aaiAnim);
+}
+
+function addMonster(frag, iMon, xMon, yMon) {
+	if (iMon == 4) iMon = 3;
+	var cMonHP = [1, 3, 10, 15][iMon];
+	var cMonAtk = [1, 3, 5, 15][iMon];
+	var cMonAC = [0, 3, 1, 3][iMon];
+	var oMon = {
+		img: mimgMvbls, cxFrame: 16, cyFrame: 16, cFramesPerRow: 9, xOrigin: 7, yOrigin: 15,
+		animations: AAAI_ANIM[iMon],
+		animation: 0, frame: 0,
+		x: xMon, y: yMon, xOffset: 0, yOffset: 0, iDir: -1, idType: iMon,
+		iDirAtk: -1, victim: mMe, cHP: cMonHP, cAtk: cMonAtk, cAC: cMonAC,
+		step: monsterStep,
+		hit: function(cAtk) {
+			restartOrPlay('hit');
+			cAtk -= this.cAC;
+			if (cAtk <= 0) cAtk = (Math.random() * (1-cAtk) > 0);
+				  else cAtk = Math.ceil(Math.random() * cAtk);
+			this.cHP -= cAtk;
+			if (this.cHP <= 0) {
+				mMap.movable[0].remove(this);
+				steppingStuff.remove(this);
+				createFlyingCorpse(this);
+				var inc = mMe.cMaxHP > 75 ? 1 : [1, 1, 2, 4][this.idType];
+				mMe.cMaxHP = Math.min(mMe.cMaxHP + inc, 99);
+				mMe.cHP = Math.min(mMe.cHP + inc + 1, mMe.cMaxHP);
+			}
+		}
+	}
+	frag.movable[0].push(oMon);
+}
+
+function monsterStep() {
+	var cxySpeed = [ 1, 2, 2, 1 ][this.idType];
+	//document.title = cxySpeed + " - " + this.idType;
+	if (playerOrMonsterStep(this, cxySpeed, this.cAtk)) return;
+	var walk = mMap.walkmask[0];
+	var cX = mMe.x - this.x, cY = mMe.y - this.y;
+	if (cX * cX + cY * cY == 1) {
+		if (cY == -1) { this.animation += 2; this.iDirAtk = 0; }
+		else if (cX == 1) { this.animation = 3; this.iDirAtk = 1; }
+		else if (cY == 1) { this.animation += 2; this.iDirAtk = 2; }
+		else { this.animation = 2; this.iDirAtk = 3; }
+		this.frame = 0;
+		return;
+	}
+	if (this.iDir < 0 || Math.random() < 0.25) this.iDir = Math.floor(Math.random() * 4);
+	cX = this.iDir == 1 ? 1 : this.iDir == 3 ? -1 : 0;
+	cY = this.iDir == 0 ? -1 : this.iDir == 2 ? 1 : 0;
+	if (walk[this.x+cX][this.y+cY] == BLOCKED || mMap.findMovableAt(0, this.x+cX, this.y+cY)) {
+		this.iDir = -1;
+		this.frame = 0;
+		return;
+	}
+	this.x += cX; this.xOffset = (cxySpeed - 16) * cX;
+	this.y += cY; this.yOffset = (cxySpeed - 16) * cY;
+	if (cX < 0) this.animation = 0; else if (cX > 0) this.animation = 1;
+	this.frame = (frame>>2) & 3;
+}
+
+const DRAGON_OFFSETS = [ 0, 0, 0, 2,  4, 6, 6, 4,  3, 2, 1, 0 ];
+function dragonStep() {
+	if (this.animation == 2 || this.animation == 3) { // attacking
+		this.frame++;
+		if (this.frame >= 12) {
+			this.victim.hit(this.cAtk);
+			this.frame = this.xOffset = this.yOffset = 0;
+			this.animation -= 2;
+		} else if (this.iDirAtk == 1)
+			this.xOffset = DRAGON_OFFSETS[this.frame];
+		else	this.xOffset = -DRAGON_OFFSETS[this.frame];
+		return;
+	}
+	this.animation = mMe.x > this.x ? 1 : 0;
+	if ((mMe.y == this.y || mMe.y == this.y-1) && mMe.x >= this.x - 2 && mMe.x <= this.x + 2) {
+		this.iDirAtk = this.animation || 3;
+		this.animation += 2;
+		this.frame = 0;
+		return;
+	}
+	this.frame = (frame>>2) & 3;
+}
+
+function createDragonFragment() {
+	var x, y;
+	var frag = pydCreateMap(7, 4);
+	var stat = frag.static[0], walk = frag.walkmask[0];
+	frag.fFlipOnly = true;
+	for (x = 1; x < 6; ++x) {
+		walk[x][0] = walk[x][3] = BLOCKED;
+		//var theWalk = x == 1 || x == 8 ? FREE : BLOCKED;
+		for (y = 1; y < 3; ++y) {
+			stat[x][y] = rft();
+			walk[x][y] = FREE;
+		}
+	}
+	for (y = 0; y < 4; ++y)
+		walk[0][y] = walk[6][y] = BLOCKED;
+	walk[0][2] = walk[6][2] = FREE;
+	mDragon = {
+		img: mimgDragon, cxFrame: 48, cyFrame: 32, cFramesPerRow: 4, xOrigin: 23, yOrigin: 31,
+		animations: [[ 0, 11, 10, 9, 8, 9, 10, 11 ], [ 12, 23, 22, 21, 20, 21, 22, 23 ],
+			    [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 ], [ 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 ]],
+		animation: 0, frame: 0,
+		x: 3, y: 2, xOffset: 0, yOffset: 0, idType: 99,
+		iDirAtk: -1, victim: mMe, cHP: 99, cAtk: 30, cAC: 9,
+		step: dragonStep,
+		hit: function(cAtk) {
+			restartOrPlay('hit');
+			cAtk -= this.cAC;
+			if (cAtk <= 0) cAtk = (Math.random() * (1-cAtk) > 0);
+				  else cAtk = Math.ceil(Math.random() * cAtk);
+			this.cHP -= cAtk;
+			if (this.cHP < 0) {
+				this.cHP = 0;
+				mMusic.pause();
+				fadeOutAndGameOver();
+				restartOrPlay('win');
+			}
+		}
+	}
+	frag.movable[0].push(mDragon);
+	setFragmentWalls(frag);
+	TUT_DRAGON.applicable = true;
+	return frag;
+}
+
+function createRandomFragment(fManyDoors, fNoItems) {
+	if (miDlvl >= 10 && !fNoItems && !mDragon) return createDragonFragment();
+	//if (!fNoItems && !mDragon) return createDragonFragment();
+	var x, y;
+	var cX = 3 + Math.floor(Math.random() * (MAX_ROOM_SIZE - 2));
+	var cY = 3 + Math.floor(Math.random() * (MAX_ROOM_SIZE - 2));
+	var frag = pydCreateMap(cX, cY);
+	var stat = frag.static[0], pick = frag.static[1], walk = frag.walkmask[0];
+	// Wall it in completely
+	for (x = 0; x < cX; ++x) {
+		walk[x][0] = BLOCKED;
+		walk[x][cY-1] = BLOCKED;
+		for (y = 1; y < cY - 1; ++y)
+			stat[x][y] = rft();
+	}
+	for (y = 0; y < cY; ++y) {
+		walk[0][y] = BLOCKED;
+		walk[cX-1][y] = BLOCKED;
+	}
+	// Place doors (holes in walls); zero or one per wall, but not in the corners
+	var afDoorSides = fManyDoors ? [7, 11, 13, 14, 15][Math.floor(Math.random() * 5)] : 1 + Math.floor(Math.random() * 15);
+	if (afDoorSides & 1)
+		walk[1 + Math.floor(Math.random() * (cX - 2))][0] = FREE;
+	if (afDoorSides & 2)
+		walk[cX-1][1 + Math.floor(Math.random() * (cY - 2))] = FREE;
+	if (afDoorSides & 4)
+		walk[1 + Math.floor(Math.random() * (cX - 2))][cY-1] = FREE;
+	if (afDoorSides & 8)
+		walk[0][1 + Math.floor(Math.random() * (cY - 2))] = FREE;
+	// Place item and monsters
+	if (!fNoItems) {
+		var i = Math.floor(Math.random() * (miDlvl >= 9 ? 18 : 9 + miDlvl)) - 4;
+		if (i >= 0) {
+			frag.xItem = x = 1 + Math.floor(Math.random() * (cX - 2));
+			frag.yItem = y = 1 + Math.floor(Math.random() * (cY - 2));
+			if (i < 5) {
+				frag.iItem = i;
+				pick[x][y] = 65 + i;
+				A_TUT_ITEM[i].applicable = true;
+			} else if (i < 10) {
+				addMonster(frag, i - 5, x, y);
+			} else {
+				for (var j = Math.floor(Math.random() * (cX - 3) * (cY - 2)); --j >= 0; ) {
+					if (j) do {
+						x = 1 + Math.floor(Math.random() * (cX - 2));
+						y = 1 + Math.floor(Math.random() * (cY - 2));
+					} while (frag.findMovableAt(0, x, y));
+					addMonster(frag, i - 10, x, y);
+				}
+			}
+		}
+	}
+	// Place decorations
+	frag.afWebs = Math.floor(Math.random() * 64);
+	if (frag.afWebs > 7) frag.afWebs = 0;
+	var iTile = 56 + 2 * Math.floor(Math.random() * 10);
+	if (iTile < 60) {
+		for (var i = Math.floor(Math.random() * (cX + cY - 6)); i >= 0; --i) {
+			x = 1 + Math.floor(Math.random() * (cX - 2));
+			y = 1 + Math.floor(Math.random() * (cY - 2));
+			if (pick[x][y] === undefined)
+				pick[x][y] = iTile + Math.floor(Math.random() * 2);
+		}
+	}
+	setFragmentWalls(frag);
+	return frag;
+}
+
+function rotateFragment(frag, dir) {
+	restartOrPlay('rotate');
+	TUT_ROTATE.done = true;
+	if (frag.fFlipOnly) {
+		var temp = frag.walkmask[0][0][1];
+		frag.walkmask[0][0][1] = frag.walkmask[0][6][1] = frag.walkmask[0][0][2];
+		frag.walkmask[0][0][2] = frag.walkmask[0][6][2] = temp;
+		setFragmentWalls(frag);
+		return frag;
+	}
+	var cX = frag.cY, cY = frag.cX;
+	var fragNew = pydCreateMap(cX, cY);
+	var stat = frag.static[0],   statNew = fragNew.static[0];
+	var pick = frag.static[1],   pickNew = fragNew.static[1];
+	var walk = frag.walkmask[0], walkNew = fragNew.walkmask[0];
+	var mvbl = frag.movable[0],  mvblNew = fragNew.movable[0];
+	for (var x = 0; x < cX; ++x) {
+		for (var y = 0; y < cY; ++y) {
+			statNew[x][y] = dir < 0 ? stat[y][cX-1-x] : stat[cY-1-y][x];
+			pickNew[x][y] = dir < 0 ? pick[y][cX-1-x] : pick[cY-1-y][x];
+			walkNew[x][y] = dir < 0 ? walk[y][cX-1-x] : walk[cY-1-y][x];
+		}
+	}
+	for (var i = mvbl.length; --i >= 0; ) {
+		var m = mvblNew[i] = mvbl[i];
+		var xOld = m.x;
+		m.x = dir < 0 ? cX - 1 - m.y  : m.y;
+		m.y = dir < 0 ? xOld : cY - 1 - xOld;
+	}
+	fragNew.afWebs = frag.afWebs;
+	fragNew.iItem = frag.iItem;
+	if (frag.xItem) {
+		fragNew.xItem = dir < 0 ? cX - 1 - frag.yItem : frag.yItem;
+		fragNew.yItem = dir < 0 ? frag.xItem : cY - 1 - frag.xItem;
+	}
+	setFragmentWalls(fragNew);
+	return fragNew;
+}
+
+function rft() { // random floor tile
+	var x = Math.floor(Math.random() * 4);
+	switch (Math.floor(Math.random() * 4)) {
+		case 0:	return 11 + x;
+		case 1:	return 21 + x;
+		case 2:	return 31 + x;
+		default:return 70 + x;
+	}
+}
+
+function setFragmentWalls(frag) {
+	var cX = frag.cX, cY = frag.cY;
+	var fSkip = false, fSkipL = false;
+	var stat = frag.static[0], pick = frag.static[1], walk = frag.walkmask[0];
+	for (var x = 0; x < cX; ++x) {
+		// upper wall is easy
+		stat[x][0] =
+			walk[x][0] == FREE
+			? rft() : walk[x][1] == BLOCKED
+			? x == 0 ? 0 : 5
+			: 1 + Math.floor(Math.random() * 4);
+		// lower wall needs corners
+		if (walk[x][cY-1] == FREE) {
+			if (!fSkip) stat[x-1][cY-1] =
+				walk[x-1][cY-2] == BLOCKED
+				? 10 : 55;
+			stat[x][cY-1] = rft();
+			stat[x+1][cY-1] =
+				walk[x+1][cY-2] == BLOCKED
+				? 15 : 54;
+			fSkip = true;
+		} else if (fSkip)
+			fSkip = false;
+		else	stat[x][cY-1] =
+				walk[x][cY-2] == BLOCKED
+				? x == 0 ? 40 : 45 :
+				41 + Math.floor(Math.random() * 4);
+	}
+	for (var y = cY - 2; y >= 1; --y) {
+		// left wall
+		if (walk[0][y] == FREE) {
+			if (y < cY - 2 && !fSkipL)
+				stat[0][y+1] = 55;
+			stat[0][y] = rft();
+			if (y > 1)
+				stat[0][y-1] = 1 + Math.floor(Math.random() * 4);
+			fSkipL = true;
+		} else if (fSkipL)
+			fSkipL = false;
+		else	stat[0][y] = 10 + 10 * Math.floor(Math.random() * 3);
+		// right wall
+		if (walk[cX-1][y] == FREE) {
+			if (y < cY - 2 && !fSkip)
+				stat[cX-1][y+1] = 54;
+			stat[cX-1][y] = rft();
+			if (y > 1)
+				stat[cX-1][y-1] = 1 + Math.floor(Math.random() * 4);
+			fSkip = true;
+		} else if (fSkip)
+			fSkip = false;
+		else	stat[cX-1][y] = 15 + 10 * Math.floor(Math.random() * 3);
+	}
+	if (frag.afWebs) {
+		// Remove all old webs
+		if (pick[1][1] >= 46 && pick[1][1] <= 49) pick[1][1] = undefined;
+		if (pick[cX-2][1] >= 46 && pick[cX-2][1] <= 49) pick[cX-2][1] = undefined;
+		if (pick[1][cY-2] >= 46 && pick[1][cY-2] <= 49) pick[1][cY-2] = undefined;
+		if (pick[cX-2][cY-2] >= 46 && pick[cX-2][cY-2] <= 49) pick[cX-2][cY-2] = undefined;
+		// Place one web, if possible. Prefer always using the same corner
+		var fWebL = (walk[0][1]    == BLOCKED && walk[1][0]    == BLOCKED && pick[1][1]    === undefined);
+		var fWebR = (walk[cX-1][1] == BLOCKED && walk[cX-2][0] == BLOCKED && pick[cX-2][1] === undefined);
+		if (fWebL && fWebR) fWebL = frag.afWebs & 1;
+		if (fWebL)	pick[1][1]    = 46 + (frag.afWebs & 2);
+		else if (fWebR)	pick[cX-2][1] = 47 + (frag.afWebs & 2);
+	}
+}
+
+function canPasteFragment(frag, xFrag, yFrag) {
+	var statMap = mMap.static[0];
+	var walkMap = mMap.walkmask[0], walk = frag.walkmask[0];
+	if (xFrag < 0 || yFrag < 0 || xFrag + frag.cX > mMap.cX || yFrag + frag.cY > mMap.cY)
+		return false;
+	var fNotRight = xFrag + frag.cX < mMap.cX;
+	var fNotBottom = yFrag + frag.cY < mMap.cY;
+	var cX = frag.cX, cY = frag.cY;
+	var fConn = false;
+	for (var x = 0; x < frag.cX; ++x) {
+		for (var y = 0; y < frag.cY; ++y) {
+			if (statMap[xFrag+x][yFrag+y] != UNPAINTED) return false;
+		}
+		if (yFrag > 0 ? (statMap[xFrag+x][yFrag-1] != UNPAINTED && walkMap[xFrag+x][yFrag-1] != walk[x][0]) : (BLOCKED != walk[x][0]))
+			return false;
+		if (fNotBottom ? (statMap[xFrag+x][yFrag+cY] != UNPAINTED && walkMap[xFrag+x][yFrag+cY] != walk[x][cY-1]) : (BLOCKED != walk[x][cY-1]))
+			return false;
+		if (yFrag > 0 && statMap[xFrag+x][yFrag-1] != UNPAINTED && walk[x][0] != BLOCKED) fConn = true;
+		if (fNotBottom && statMap[xFrag+x][yFrag+cY] != UNPAINTED && walk[x][cY-1] != BLOCKED) fConn = true;
+	}
+	for (var y = 0; y < frag.cY; ++y) {
+		if (xFrag > 0 ? (statMap[xFrag-1][yFrag+y] != UNPAINTED && walkMap[xFrag-1][yFrag+y] != walk[0][y]) : (BLOCKED != walk[0][y]))
+			return false;
+		if (fNotRight ? (statMap[xFrag+cX][yFrag+y] != UNPAINTED && walkMap[xFrag+cX][yFrag+y] != walk[cX-1][y]) : (BLOCKED != walk[cX-1][y]))
+			return false;
+		if (xFrag > 0 && statMap[xFrag-1][yFrag+y] != UNPAINTED && walk[0][y] != BLOCKED) fConn = true;
+		if (fNotRight && statMap[xFrag+cX][yFrag+y] != UNPAINTED && walk[cX-1][y] != BLOCKED) fConn = true;
+	}
+	return fConn;
+}
+
+function pasteMap(frag, xFrag, yFrag) {
+	var stat = frag.static[0],   statMap = mMap.static[0];
+	var pick = frag.static[1],   pickMap = mMap.static[1];
+	var walk = frag.walkmask[0], walkMap = mMap.walkmask[0];
+	for (var x = frag.cX; --x >= 0; ) {
+		for (var y = frag.cY; --y >= 0; ) {
+			statMap[x+xFrag][y+yFrag] = stat[x][y];
+			pickMap[x+xFrag][y+yFrag] = pick[x][y];
+			walkMap[x+xFrag][y+yFrag] = walk[x][y];
+		}
+	}
+	var amvb = frag.movable[0],  amvbMap = mMap.movable[0];
+	for (var i = 0; i < amvb.length; ++i) {
+		var mvb = amvb[i];
+		mvb.x += xFrag; mvb.y += yFrag;
+		for (var d = mvb.dest; d; d = d.next) {
+			d.x += xFrag;
+			d.y += yFrag;
+		}
+		amvbMap.push(mvb);
+	}
+}
+
+function pasteFragment(frag, xFrag, yFrag) {
+	pasteMap(frag, xFrag, yFrag);
+	// Increase map size if we come near the border
+	if (xFrag <= MAX_ROOM_SIZE) {
+		var cxAdd = MAX_ROOM_SIZE - xFrag + 1;
+		var oldMap = mMap;
+		mMap = pydCreateMap(mMap.cX + cxAdd, mMap.cY, UNPAINTED, BLOCKED);
+		pasteMap(oldMap, cxAdd, 0);
+		mxScroll += cxAdd * 16;
+	}
+	if (yFrag <= MAX_ROOM_SIZE) {
+		var cyAdd = MAX_ROOM_SIZE - yFrag + 1;
+		var oldMap = mMap;
+		mMap = pydCreateMap(mMap.cX, mMap.cY + cyAdd, UNPAINTED, BLOCKED);
+		pasteMap(oldMap, 0, cyAdd);
+		myScroll += cyAdd * 16
+	}
+	if (xFrag + frag.cX + MAX_ROOM_SIZE >= mMap.cX) {
+		var oldMap = mMap;
+		mMap = pydCreateMap(xFrag + frag.cX + MAX_ROOM_SIZE + 1, mMap.cY, UNPAINTED, BLOCKED);
+		pasteMap(oldMap, 0, 0);
+	}
+	if (yFrag + frag.cY + MAX_ROOM_SIZE >= mMap.cY) {
+		var oldMap = mMap;
+		mMap = pydCreateMap(mMap.cX, yFrag + frag.cY + MAX_ROOM_SIZE + 1, UNPAINTED, BLOCKED);
+		pasteMap(oldMap, 0, 0);
+	}
+}
+
+function placeFragmentHere() {
+	TUT_PLACE.done = true;
+	TUT_XPORT.applicable = false; // teleport tutorial is annoying - only show it until another fragment is placed!
+	restartOrPlay('place');
+	if (TUT_DRAGON.applicable && mFrag.movable[0][0] === mDragon) TUT_DRAGON.done = true;
+	// No more fragments once the game is over or we are fighting the dragon!
+	if (miFrameGameOver >= 0 || (mDragon && mMe.victim == mDragon)) return;
+	if (mFrag.iItem !== undefined) A_TUT_ITEM[mFrag.iItem].done = true;
+	// Set destination first, so it is offset when pasteFragment(...) resizes the map!
+	var d = {
+		x: mxFrag + (mFrag.xItem ? mFrag.xItem : Math.floor(mFrag.cX / 2)),
+		y: myFrag + (mFrag.yItem ? mFrag.yItem : Math.floor(mFrag.cY / 2))
+	};
+	if (mMe.dest) {
+		for (var dOld = mMe.dest; dOld.next; dOld = dOld.next);
+		dOld.next = d;
+	} else mMe.dest = d;
+	pasteFragment(mFrag, mxFrag, myFrag);
+	var mvbl = mFrag.movable[0];
+	if (mvbl.length) d.monster = mvbl[0];
+	for (var i = mvbl.length; --i >= 0; )
+		steppingStuff.push(mvbl[i]);
+	maFrags[miSelFrag] = mFrag = createRandomFragment();
+}
+
+function borderScrollMap() {
+	const SPEED = 240;
+	if (!mfMouseInUse || (mDragon && mMe.victim == mDragon)) return;
+	// Don't borderscroll while drag scrolling
+	if (mfDragging && !mfDownOnFragment) return;
+	if (mxScroll > -CX_FRAG_MENU && mouseX >= 0) {
+		var xScroll = 0.1 - mouseX / SCREEN_CX;
+		if (xScroll > 0) mxScroll = Math.max(-CX_FRAG_MENU, mxScroll - Math.ceil(xScroll * SPEED));
+		TUT_SCROLL.done = true;
+	}
+	if (myScroll > 0 && mouseY >= 0) {
+		var yScroll = 0.1 - mouseY / SCREEN_CY;
+		if (yScroll > 0) myScroll = Math.max(0, myScroll - Math.ceil(yScroll * SPEED));
+		TUT_SCROLL.done = true;
+	}
+	if (mxScroll / 16 < mMap.cX - 40 && mouseX < SCREEN_CX) {
+		var xScroll = mouseX / SCREEN_CX - 0.9;
+		if (xScroll > 0) mxScroll = Math.min((mMap.cX - 40) * 16, mxScroll + Math.ceil(xScroll * SPEED));
+		TUT_SCROLL.done = true;
+	}
+	if (myScroll / 16 < mMap.cY - 30 && mouseY < SCREEN_CY) {
+		var yScroll = mouseY / SCREEN_CY - 0.9;
+		if (yScroll > 0) myScroll = Math.min((mMap.cY - 30) * 16, myScroll + Math.ceil(yScroll * SPEED));
+		TUT_SCROLL.done = true;
+	}
+}
+
+function dragScrollMap() {
+	var cX = mouseX - mxMouseDown;
+	var cY = mouseY - myMouseDown;
+	if (cX * cX + cY * cY > 36) {
+		mfDragging = true;
+		if (mfDownOnFragment || (mDragon && mMe.victim == mDragon)) return;
+		mfMouseInUse = false; // don't show fragment preview while drag-scrolling
+		mxScroll = Math.min(mxScroll - cX, (mMap.cX - 40) * 16);
+		if (mxScroll < -CX_FRAG_MENU) mxScroll = -CX_FRAG_MENU;
+		mxMouseDown = mouseX;
+		myScroll = Math.min(myScroll - cY, (mMap.cY - 30) * 16);
+		if (myScroll < 0) myScroll = 0;
+		myMouseDown = mouseY;
+		TUT_SCROLL.done = true;
+	}
+}
+
+var maFlyingStuff = [];
+
+function createFlyingItem(id) {
+	var xItem = mMe.x * 16 - mxScroll, yItem = mMe.y * 16 - myScroll;
+	var item = {
+		img: mimgTiles, imgX: 80 + 16*id, imgY: 96, imgCX: 16, imgCY: 16, x: xItem, y: yItem,
+		xSpeed: xItem > SCREEN_CX / 2 ? -4 : 4, ySpeed: yItem > SCREEN_CY / 2 ? 0 : 4,
+		xDest: AX_ITEM_CTR[id], yDest: 10,
+		step: flyingStuffStep, idItemType: id
+	};
+	maFlyingStuff.push(item);
+	steppingStuff.push(item);
+}
+
+function createFlyingCorpse(mon) {
+	var xCorpse = mon.x * 16 - mxScroll, yCorpse = mon.y * 16 - myScroll;
+	var corpse = {
+		img: mimgMvbls, imgX: 128, imgY: mon.idType * 32 + 32, imgCX: 16, imgCY: 16, x: xCorpse, y: yCorpse,
+		xSpeed: xCorpse > SCREEN_CX / 2 ? -4 : 4, ySpeed: yCorpse > SCREEN_CY / 2 ? -4 : 0,
+		xDest: xCorpse, yDest: SCREEN_CY,
+		step: flyingStuffStep
+	};
+	maFlyingStuff.push(corpse);
+	steppingStuff.push(corpse);
+}
+
+function flyingStuffStep() {
+	var cxDist = this.xDest - this.x;
+	var cyDist = this.yDest - this.y;
+	if ((Math.abs(cxDist) < Math.abs(this.xSpeed) && Math.abs(cyDist) < Math.abs(this.ySpeed))
+			|| this.y < 10 || this.y > SCREEN_CY) {
+		maFlyingStuff.remove(this);
+		steppingStuff.remove(this);
+		if (this.idItemType !== undefined) {
+			macItems[this.idItemType]++;
+			if (this.idItemType == 3) TUT_XPORT.applicable = true;
+		}
+		return;
+	}
+	this.x += this.xSpeed; this.y += this.ySpeed;
+	var cxyDist = Math.sqrt(cxDist * cxDist + cyDist * cyDist);
+	this.xSpeed = Math.floor(this.xSpeed * 0.8 + 5 * cxDist / cxyDist);
+	this.ySpeed = Math.floor(this.ySpeed * 0.8 + 5 * cyDist / cxyDist);
+}
+
+function start() {
+	steppingStuff.push(mMe);
+	newLevel();
+}
+
+function step() {
+	borderScrollMap();
+}
+
+function isOnScroll(x, y) {
+	return macItems[3] > 0 && y >= 0 && y < 52 && x >= AX_ITEM_CTR[3] - 10 && x < AX_ITEM_CTR[3] + 42 + mcxScroll;
+}
+
+if (Array.prototype.find === undefined)
+	Array.prototype.find = function(fn) {
+		for (var i = 0; i < this.length; ++i)
+			if (fn(this[i])) return this[i];
+	};
+
+function paint() {
+	/*bb.fillStyle = '#ffe0ff';
+	bb.fillRect(0, 0, SCREEN_CX, SCREEN_CY);
+	bb.clearRect(8, 8, 32, 32);
+	bb.strokeStyle = '#ffc000';
+	bb.moveTo(100,0);
+	bb.lineTo(0,100);
+	bb.stroke();
+	bb.strokeRect(50,50,100,30);
+	bb.textBaseline = 'top';
+	bb.font = '30px message-box';
+	bb.fillStyle = '#000000';
+	bb.fillText('Test',50,50);*/
+	if (miFrameGameOver >= 0) {
+		bb.fillStyle = '#000000';
+		bb.fillRect(0, 0, SCREEN_CX, SCREEN_CY);
+		bb.textBaseline = 'middle';
+		bb.textAlign = 'center';
+		bb.fillStyle = '#ffffff';
+		bb.font = '28px "Trebuchet MS",message-box';
+		if (mMe.cHP > 0) {
+			bb.fillText("You win! You have defeated the wyvern!", 320, 200);
+			bb.font = '20px "Trebuchet MS",message-box';
+			bb.fillText("Now it wants to be your friend.", 320, 230);
+		} else {
+			bb.fillText("You have died!", 320, 200);
+			bb.font = '20px "Trebuchet MS",message-box';
+			bb.fillText("You have no possessions to speak of.", 320, 230);
+		}
+		bb.fillText("Click to play again!", 320, 280);
+		return;
+	}
+	if (mDragon && mMe.victim == mDragon) {
+		bb.fillStyle = '#241219';
+		bb.fillRect(0, 0, SCREEN_CX, SCREEN_CY);
+	}
+	var fHoverScroll = (mxMouseDown == null || mfDownOnScroll) && isOnScroll(mouseX, mouseY);
+	// Draw map
+	mMap.drawStatic(0, -mxScroll, -myScroll);
+	mMap.drawStatic(1, -mxScroll, -myScroll);
+	mMap.drawMovable(0, -mxScroll, -myScroll);
+	bb.font = '24px "Trebuchet MS",message-box';
+	mxFrag = myFrag = undefined;
+	if (mDragon && mMe.victim == mDragon) {
+		// Scroll to dragon
+		var cX = mxScroll - (mDragon.x * 16 - SCREEN_CX / 2);
+		var cY = myScroll - (mDragon.y * 16 - SCREEN_CY / 2);
+		var cXY = Math.sqrt(cX * cX + cY * cY);
+		if (cXY > 256) {
+			var cSteps = cXY / 16;
+			mxScroll -= Math.ceil(cX / cSteps); myScroll -= Math.ceil(cY / cSteps);
+		} else if (cXY > 16) {
+			mxScroll -= Math.ceil(cX / 16); myScroll -= Math.ceil(cY / 16);
+		}
+		// Draw dragon health
+		bb.drawImage(mimgDragon, 0, 96, 48, 32, 4, 10, 48, 32);
+		bb.fillStyle = '#ffffff';
+		bb.textBaseline = 'middle';
+		bb.textAlign = 'left';
+		bb.fillText(": " + mDragon.cHP, 52, 26);
+	} else {
+		// Draw fragment preview
+		if (mouseX >= CX_FRAG_MENU && (mfMouseInUse || mfDownOnFragment) && !fHoverScroll) {
+			bb.globalAlpha = 0.75;
+			mxFrag = Math.floor(((mouseX + mxScroll) - mFrag.cX * 8) / 16);
+			myFrag = Math.floor(((mouseY + myScroll) - mFrag.cY * 8) / 16);
+			var fCan = canPasteFragment(mFrag, mxFrag, myFrag);
+			if (!fCan) {
+				if (canPasteFragment(mFrag, mxFrag + 1, myFrag))
+					++mxFrag, fCan = true;
+				else if (canPasteFragment(mFrag, mxFrag - 1, myFrag))
+					--mxFrag, fCan = true;
+				else if (canPasteFragment(mFrag, mxFrag, myFrag + 1))
+					++myFrag, fCan = true;
+				else if (canPasteFragment(mFrag, mxFrag, myFrag - 1))
+					--myFrag, fCan = true;
+			}
+			mFrag.drawStatic(0, mxFrag * 16 - mxScroll, myFrag * 16 - myScroll);
+			mFrag.drawStatic(1, mxFrag * 16 - mxScroll, myFrag * 16 - myScroll);
+			mFrag.drawMovable(0, mxFrag * 16 - mxScroll, myFrag * 16 - myScroll);
+			bb.globalAlpha = 0.4;
+			bb.fillStyle = fCan ? '#ffff80' : '#ff4040';
+			bb.fillRect(mxFrag * 16 - mxScroll, myFrag * 16 - myScroll, mFrag.cX * 16, mFrag.cY * 16);
+			bb.globalAlpha = 1.0;
+		}
+		// Draw fragment bar
+		bb.fillStyle = '#000000';
+		bb.fillRect(0, 0, CX_FRAG_MENU, SCREEN_CY);
+		for (var i = 0, y = 0; i < 4; ++i, y += CY_FRAG) {
+			var frag = maFrags[i];
+			frag.drawStatic(0, (CX_FRAG_MENU - frag.cX * 16) / 2, y + (CY_FRAG - frag.cY * 16) / 2);
+			frag.drawStatic(1, (CX_FRAG_MENU - frag.cX * 16) / 2, y + (CY_FRAG - frag.cY * 16) / 2);
+			frag.drawMovable(0, (CX_FRAG_MENU - frag.cX * 16) / 2, y + (CY_FRAG - frag.cY * 16) / 2);
+			if (i == miSelFrag) {
+				bb.globalAlpha = 0.4;
+				bb.fillStyle = '#ffff80';
+				bb.fillRect(0, y, CX_FRAG_MENU, CY_FRAG);
+				bb.globalAlpha = 1.0;
+			} else if (mouseX < CX_FRAG_MENU && mouseY >= y && mouseY < y + CY_FRAG) {
+				bb.globalAlpha = 0.4;
+				bb.fillStyle = '#ffffc0';
+				bb.fillRect(0, y, CX_FRAG_MENU, CY_FRAG);
+				bb.globalAlpha = 1.0;
+			}
+		}
+		// Draw tutorial
+		bb.fillStyle = '#ffffff';
+		var oTut = A_TUT.find(function(oTut) { return (oTut.applicable === undefined || oTut.applicable) && !oTut.done; });
+		if (oTut) {
+			bb.textBaseline = 'bottom';
+			bb.textAlign = 'center';
+			fillWrappedText(oTut.text, (SCREEN_CX + CX_FRAG_MENU) / 2, SCREEN_CY - 5, 30, SCREEN_CX - CX_FRAG_MENU);
+		}
+		bb.textBaseline = 'middle';
+		bb.textAlign = 'left';
+	}
+	// Draw inventory
+	if (fHoverScroll) {
+		bb.globalAlpha = 0.4;
+		bb.fillRect(AX_ITEM_CTR[3]-10, 0, 52+mcxScroll, 52);
+		bb.globalAlpha = 1.0;
+	}
+	var sText = "";
+	bb.drawImage(mimgTiles, 64, 96, 15, 16, CX_FRAG_MENU+4, 10, 30, 32);
+	bb.fillText(": " + mMe.cHP + "/" + mMe.cMaxHP, CX_FRAG_MENU+36, 26);
+	for (var i = 0; i < 4; ++i) {
+		bb.drawImage(mimgTiles, 80 + i*16, 96, 15, 16, AX_ITEM_CTR[i], 10, 30, 32);
+		bb.fillText(sText = /* assign! */ ": " + macItems[i], AX_ITEM_CTR[i]+32, 26);
+		if (i == 0 && frame - mMe.iMightStartFrame < 128) {
+			bb.fillStyle = '#ff8080';
+			bb.fillText("+" + (10+Math.floor(macItems[0]/3)), AX_ITEM_CTR[0]+32+bb.measureText(sText).width, 26);
+			bb.fillStyle = '#ffffff';
+		}
+	}
+	mcxScroll = bb.measureText(sText).width;
+	// Draw flying items
+	for (var i = maFlyingStuff.length; --i >= 0; ) {
+		var item = maFlyingStuff[i];
+		bb.drawImage(item.img, item.imgX, item.imgY, item.imgCX, item.imgCY, item.x, item.y, item.imgCX, item.imgCY);
+	}
+}
+
+function mouseDown(e) {
+	if (!mMusic) { mMusic = document.getElementById('music'); mMusic.play(); }
+	getMouseCoords(e);
+	mxMouseDown = mouseX;
+	myMouseDown = mouseY;
+	mfDownOnFragment = mfDownOnScroll = false;
+	if (mouseX < CX_FRAG_MENU) {
+		i = Math.floor(mouseY / CY_FRAG);
+		if (i >= 0 && i < 4) {
+			if (mfFragmentChanged = /* assign! */ i != miSelFrag) {
+				restartOrPlay('select');
+				TUT_SELECT.done = true;
+			}
+			mFrag = maFrags[i];
+			miSelFrag = i;
+			mfDownOnFragment = true;
+		}
+	} else if (isOnScroll(mouseX, mouseY))
+		mfDownOnScroll = true;
+}
+
+function mouseUp(e) {
+	if (miFrameGameOver >= 0 && frame - miFrameGameOver >= 10) {
+		//location.reload();
+		location.replace(location.href);
+		return;
+	}
+	if (mfDownOnScroll) {
+		if (isOnScroll(mouseX, mouseY)) teleport();
+	} else if (mfDownOnFragment && !mfDragging) {
+		if (!mfFragmentChanged)
+			maFrags[i] = mFrag = rotateFragment(mFrag, 1.0);
+	} else if ((mfDownOnFragment || !mfDragging) && mouseX >= CX_FRAG_MENU
+			&& canPasteFragment(mFrag, mxFrag, myFrag)) {
+		placeFragmentHere();
+		mfMouseInUse = false;
+	}
+	mxMouseDown = myMouseDown = undefined;
+	mfDragging = false;
+}
+
+function touchCoordsToOffsetCoords(e) {
+	var t = e.changedTouches[0];
+	return {
+		offsetX: Math.round(t.clientX - t.target.offsetLeft + window.pageXOffset),
+		offsetY: Math.round(t.clientY - t.target.offsetTop  + window.pageYOffset)
+	};
+}
+function activateMouseEvents() {
+	fbCanvas.onmouseover = function() { mfMouseInUse = true; };
+	fbCanvas.onmousedown = mouseDown;
+	fbCanvas.onmouseup = mouseUp;
+	mfMouseInUse = mfDownOnFragment = false;
+}
+function deactivateMouseEvents() {
+	fbCanvas.onmouseover = fbCanvas.onmousedown = fbCanvas.onmouseup = undefined;
+}
+activateMouseEvents();
+
+fbCanvas.addEventListener('touchstart', function(e) {
+	mfMouseInUse = false;
+	mouseDown(touchCoordsToOffsetCoords(e));
+  }, false);
+fbCanvas.addEventListener('touchmove',  function(e) {
+	mfDragging = true;
+	getMouseCoords(touchCoordsToOffsetCoords(e));
+	dragScrollMap();
+  }, false);
+fbCanvas.addEventListener('touchend',   function(e) {
+	deactivateMouseEvents();
+	mouseUp(touchCoordsToOffsetCoords(e));
+	mfMouseInUse = mfDownOnFragment = false;
+	setTimeout(activateMouseEvents, 100);
+  }, false);
+
+fbCanvas.addEventListener('mousemove', function(e) {
+	if (mxMouseDown === undefined || (e.button | e.buttons) == 0) {
+		mfMouseInUse = true;
+		return;
+	}
+	dragScrollMap();
+}, false);
+
+var wheelSum = 0.0;
+fbCanvas.onwheel = function(e) {
+	wheelSum += e.deltaX + e.deltaY + e.deltaZ;
+	if (Math.abs(wheelSum) >= 1.0) {
+		maFrags[miSelFrag] = mFrag = rotateFragment(mFrag, wheelSum);
+		wheelSum = 0.0;
+	}
+	return false;
+};
+</script>
+<audio preload="none" loop id="music"><source src="music.mp3"></audio>
+</body>
+</html>
